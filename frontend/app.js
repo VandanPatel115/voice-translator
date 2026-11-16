@@ -19,12 +19,16 @@ function floatTo16BitPCM(floats) {
 async function start() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-    if (msg.type === "debug") statusEl.textContent = `server received ${msg.seconds} s of audio`;
+    if (msg.type === "vad") {
+      statusEl.textContent = msg.speaking ? "🎙️ speaking…" : "listening";
+    } else if (msg.type === "final_en") {
+      log(`[${msg.id}] EN: ${msg.text}`);
+    } else if (msg.type === "hindi") {
+      log(`[${msg.id}] HI: ${msg.text}   (ASR ${msg.asr_ms} ms, MT ${msg.mt_ms} ms)`);
+    }
   };
-  await new Promise((resolve) => (ws.onopen = resolve));
-  log("connected");
 
   stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },

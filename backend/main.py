@@ -1,41 +1,76 @@
-import os
+import asyncio
+import time
 
-import numpy as np
-import soundfile as sf
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
+from backend.asr import transcribe
+from backend.segmenter import Segmenter, pcm_to_wav
+from backend.translate import translate
+from backend.vad import FRAME_BYTES, reset
+
 app = FastAPI()
 
-BYTES_PER_SECOND = 16000 * 2   # 16 kHz × 2 bytes per sample
+
+async def process_utterances(queue: asyncio.Queue, ws: WebSocket) -> None:
+    """Consumer: take finished utterances and run ASR, then translation."""
+    utt_id = 0
+    while True:
+        pcm = await queue.get()
+        utt_id += 1
+
+        t0 = time.perf_counter()
+        english = await asyncio.to_thread(transcribe, pcm_to_wav(pcm))
+        t1 = time.perf_counter()
+        await ws.send_json({"type": "final_en", "id": utt_id, "text": english})
+
+        hindi = await asyncio.to_thread(translate, english)
+        t2 = time.perf_counter()
+        await ws.send_json({
+            "type": "hindi",
+            "id": utt_id,
+            "text": hindi,
+            "asr_ms": round((t1 - t0) * 1000),
+            "mt_ms": round((t2 - t1) * 1000),
+        })
 
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     print("client connected")
-    audio = bytearray()
-    next_report = BYTES_PER_SECOND
+
+    reset()
+    seg = Segmenter()
+    queue: asyncio.Queue = asyncio.Queue()
+    worker = asyncio.create_task(process_utterances(queue, ws))
+
+    buffer = b""
+    was_speaking = False
     try:
         while True:
             msg = await ws.receive()
             if msg["type"] == "websocket.disconnect":
                 break
-            if msg.get("bytes") is not None:
-                audio.extend(msg["bytes"])
-                if len(audio) >= next_report:
-                    seconds = round(len(audio) / BYTES_PER_SECOND, 1)
-                    await ws.send_json({"type": "debug", "seconds": seconds})
-                    next_report += BYTES_PER_SECOND
-            elif msg.get("text") is not None:
-                print(f"text: {msg['text']}")
+            if msg.get("bytes") is None:
+                continue
+
+            buffer += msg["bytes"]
+            while len(buffer) >= FRAME_BYTES:
+                frame, buffer = buffer[:FRAME_BYTES], buffer[FRAME_BYTES:]
+                utterance = seg.feed(frame)
+                if utterance:
+                    await queue.put(utterance)
+
+                speaking = seg.state == "SPEAKING"
+                if speaking != was_speaking:
+                    await ws.send_json({"type": "vad", "speaking": speaking})
+                    was_speaking = speaking
     except WebSocketDisconnect:
         pass
     finally:
-        print(f"client disconnected, {len(audio)} bytes received")
-        if audio:
-            os.makedirs("out", exist_ok=True)
-            samples = np.frombuffer(bytes(audio), dtype=np.int16)
-            sf.write("out/live_test.wav", samples, 16000, subtype="PCM_16")
-            print("saved out/live_test.wav")
+        worker.cancel()
+        print("client disconnected")
+
+
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
