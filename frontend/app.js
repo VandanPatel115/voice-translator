@@ -1,14 +1,63 @@
-const logE1 = document.getElementById("log");
-const log = (text) => { logE1.textContent += text + "\n"; };
+const logEl = document.getElementById("log");
+const statusEl = document.getElementById("status");
+const startBtn = document.getElementById("start");
+const stopBtn = document.getElementById("stop");
+const log = (text) => { logEl.textContent += text + "\n"; };
 
-const ws = new WebSocket(`ws://${location.host}/ws`);
+const FRAME_SAMPLES = 512;   // 32 ms at 16 kHz
+let ws, audioCtx, stream;
 
-ws.onopen = () => log("connected to server");
-ws.onmessage = (event) => log(`<- ${event.data}`);
-ws.onclose = () => log('disconnected');
+function floatTo16BitPCM(floats) {
+  const out = new Int16Array(floats.length);
+  for (let i = 0; i < floats.length; i++) {
+    const s = Math.max(-1, Math.min(1, floats[i]));
+    out[i] = s * 0x7FFF;
+  }
+  return out.buffer;
+}
 
-document.getElementById("send").onclick = () => {
-    const msg = `hello at ${new Date().toLocaleTimeString()}`;
-    ws.send(msg);
-    log(`-> ${msg}`);
-};
+async function start() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "debug") statusEl.textContent = `server received ${msg.seconds} s of audio`;
+  };
+  await new Promise((resolve) => (ws.onopen = resolve));
+  log("connected");
+
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  });
+  audioCtx = new AudioContext({ sampleRate: 16000 });
+  await audioCtx.audioWorklet.addModule("pcm-worklet.js");
+
+  const source = audioCtx.createMediaStreamSource(stream);
+  const worklet = new AudioWorkletNode(audioCtx, "pcm-worklet");
+  source.connect(worklet);
+
+  let pending = [];
+  worklet.port.onmessage = (event) => {
+    pending.push(...event.data);
+    while (pending.length >= FRAME_SAMPLES) {
+      const frame = pending.splice(0, FRAME_SAMPLES);
+      if (ws.readyState === WebSocket.OPEN) ws.send(floatTo16BitPCM(frame));
+    }
+  };
+
+  log(`mic started, sample rate ${audioCtx.sampleRate} Hz`);
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+}
+
+function stop() {
+  stream.getTracks().forEach((track) => track.stop());
+  audioCtx.close();
+  ws.close();
+  log("stopped");
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
+startBtn.onclick = start;
+stopBtn.onclick = stop;
