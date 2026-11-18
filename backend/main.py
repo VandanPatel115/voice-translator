@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.asr import transcribe
 from backend.segmenter import Segmenter, pcm_to_wav
 from backend.translate import translate
+from backend.tts import synthesize
 from backend.vad import FRAME_BYTES, reset
 
 app = FastAPI()
@@ -33,6 +34,11 @@ async def process_utterances(queue: asyncio.Queue, ws: WebSocket) -> None:
             "asr_ms": round((t1 - t0) * 1000),
             "mt_ms": round((t2 - t1) * 1000),
         })
+
+        audio = await asyncio.to_thread(synthesize, hindi)
+        t3 = time.perf_counter()
+        await ws.send_json({"type": "audio", "id": utt_id, "tts_ms": round((t3 - t2) * 1000)})
+        await ws.send_bytes(audio)
 
 
 @app.websocket("/ws")
