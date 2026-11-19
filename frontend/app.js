@@ -8,29 +8,28 @@ const FRAME_SAMPLES = 512;   // 32 ms at 16 kHz
 let ws, audioCtx, stream;
 
 let playCtx;
-const playQueue = [];
-let playing = false;
-let decodeChain = Promise.resolve();
+let nextStart = 0;
+let streamRate = 22050;
+const activeSources = [];
 
-function enqueueAudio(arrayBuffer) {
-  decodeChain = decodeChain.then(async () => {
-    const audioBuffer = await playCtx.decodeAudioData(arrayBuffer);
-    playQueue.push(audioBuffer);
-    if (!playing) playNext();
-  });
-}
-
-function playNext() {
-  if (playQueue.length === 0) {
-    playing = false;
-    return;
+function playPcmChunk(arrayBuffer) {
+  const int16 = new Int16Array(arrayBuffer);
+  const audioBuffer = playCtx.createBuffer(1, int16.length, streamRate);
+  const channel = audioBuffer.getChannelData(0);
+  for (let i = 0; i < int16.length; i++) {
+    channel[i] = int16[i] / 32768;
   }
-  playing = true;
+
   const source = playCtx.createBufferSource();
-  source.buffer = playQueue.shift();
+  source.buffer = audioBuffer;
   source.connect(playCtx.destination);
-  source.onended = playNext;
-  source.start();
+
+  nextStart = Math.max(nextStart, playCtx.currentTime + 0.05);
+  source.start(nextStart);
+  nextStart += audioBuffer.duration;
+
+  activeSources.push(source);
+  source.onended = () => activeSources.splice(activeSources.indexOf(source), 1);
 }
 
 function floatTo16BitPCM(floats) {
@@ -44,12 +43,13 @@ function floatTo16BitPCM(floats) {
 
 async function start() {
     playCtx = new AudioContext();
+    nextStart = 0;
     ws = new WebSocket(`ws://${location.host}/ws`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-        enqueueAudio(event.data);
-        return;
+    if (event.data instanceof ArrayBuffer) {
+      playPcmChunk(event.data);
+      return;
     }
     const msg = JSON.parse(event.data);
     if (msg.type === "vad") {
@@ -58,10 +58,17 @@ async function start() {
       log(`[${msg.id}] EN: ${msg.text}`);
     } else if (msg.type === "hindi") {
       log(`[${msg.id}] HI: ${msg.text}   (ASR ${msg.asr_ms} ms, MT ${msg.mt_ms} ms)`);
-    } else if (msg.type === "audio") {
-      log(`[${msg.id}] 🔊 audio ready (TTS ${msg.tts_ms} ms)`);
+    } else if (msg.type === "audio_start") {
+      streamRate = msg.sample_rate;
+    } else if (msg.type === "audio_end") {
+      log(`[${msg.id}] 🔊 TTS first audio ${msg.tts_first_ms} ms, total ${msg.tts_total_ms} ms`);
+    } else if (msg.type === "error") {
+      log(`⚠️ server error: ${msg.text}`);
     }
   };
+  
+  await new Promise((resolve) => (ws.onopen = resolve));
+  log("connected");
 
   stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },

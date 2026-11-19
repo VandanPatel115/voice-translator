@@ -7,38 +7,55 @@ from fastapi.staticfiles import StaticFiles
 from backend.asr import transcribe
 from backend.segmenter import Segmenter, pcm_to_wav
 from backend.translate import translate
-from backend.tts import synthesize
+from backend import tts_stream
 from backend.vad import FRAME_BYTES, reset
 
 app = FastAPI()
 
 
 async def process_utterances(queue: asyncio.Queue, ws: WebSocket) -> None:
-    """Consumer: take finished utterances and run ASR, then translation."""
-    utt_id = 0
-    while True:
-        pcm = await queue.get()
-        utt_id += 1
+    """Consumer: ASR → translation → streaming TTS, one utterance at a time."""
+    try:
+        async with tts_stream.connect() as tts_ws:
+            await tts_stream.configure(tts_ws)
+            utt_id = 0
+            while True:
+                pcm = await queue.get()
+                utt_id += 1
 
-        t0 = time.perf_counter()
-        english = await asyncio.to_thread(transcribe, pcm_to_wav(pcm))
-        t1 = time.perf_counter()
-        await ws.send_json({"type": "final_en", "id": utt_id, "text": english})
+                t0 = time.perf_counter()
+                english = await asyncio.to_thread(transcribe, pcm_to_wav(pcm))
+                t1 = time.perf_counter()
+                await ws.send_json({"type": "final_en", "id": utt_id, "text": english})
 
-        hindi = await asyncio.to_thread(translate, english)
-        t2 = time.perf_counter()
-        await ws.send_json({
-            "type": "hindi",
-            "id": utt_id,
-            "text": hindi,
-            "asr_ms": round((t1 - t0) * 1000),
-            "mt_ms": round((t2 - t1) * 1000),
-        })
+                hindi = await asyncio.to_thread(translate, english)
+                t2 = time.perf_counter()
+                await ws.send_json({
+                    "type": "hindi", "id": utt_id, "text": hindi,
+                    "asr_ms": round((t1 - t0) * 1000),
+                    "mt_ms": round((t2 - t1) * 1000),
+                })
 
-        audio = await asyncio.to_thread(synthesize, hindi)
-        t3 = time.perf_counter()
-        await ws.send_json({"type": "audio", "id": utt_id, "tts_ms": round((t3 - t2) * 1000)})
-        await ws.send_bytes(audio)
+                await ws.send_json({
+                    "type": "audio_start", "id": utt_id,
+                    "sample_rate": tts_stream.STREAM_SAMPLE_RATE,
+                })
+                t_first = None
+                async for chunk in tts_stream.synthesize_stream(tts_ws, hindi):
+                    if t_first is None:
+                        t_first = time.perf_counter()
+                    await ws.send_bytes(chunk)
+                t3 = time.perf_counter()
+                await ws.send_json({
+                    "type": "audio_end", "id": utt_id,
+                    "tts_first_ms": round((t_first - t2) * 1000) if t_first else None,
+                    "tts_total_ms": round((t3 - t2) * 1000),
+                })
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        await ws.send_json({"type": "error", "text": repr(e)})
+        raise
 
 
 @app.websocket("/ws")
