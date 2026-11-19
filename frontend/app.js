@@ -55,7 +55,8 @@ function floatTo16BitPCM(floats) {
 async function start() {
     playCtx = new AudioContext();
     nextStart = 0;
-    ws = new WebSocket(`ws://${location.host}/ws`);
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (event) => {
     if (event.data instanceof ArrayBuffer) {

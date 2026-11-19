@@ -5,7 +5,7 @@ from collections import deque
 import numpy as np
 import soundfile as sf
 
-from backend.vad import FRAME_BYTES, FRAME_MS, SAMPLE_RATE, reset, speech_prob
+from backend.vad import FRAME_BYTES, FRAME_MS, SAMPLE_RATE, SileroVAD
 
 
 class Segmenter:
@@ -16,7 +16,7 @@ class Segmenter:
         start_threshold: float = 0.5,
         end_threshold: float = 0.35,
         start_frames: int = 2,
-        end_silence_ms: int = 50,
+        end_silence_ms: int = 600,
         pre_roll_ms: int = 200,
         min_speech_ms: int = 300,
         max_utterance_ms: int = 12000,
@@ -30,6 +30,7 @@ class Segmenter:
         self.max_frames = max_utterance_ms // FRAME_MS
         self.keep_trailing = keep_trailing_ms // FRAME_MS
         self.pre_roll = deque(maxlen=pre_roll_ms // FRAME_MS)
+        self.vad = SileroVAD()
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -41,7 +42,7 @@ class Segmenter:
 
     def feed(self, frame: bytes) -> bytes | None:
         """Add one frame. Returns a finished utterance, or None."""
-        p = speech_prob(frame)
+        p = self.vad(frame)
 
         if self.state == "SILENT":
             self.pre_roll.append(frame)
@@ -93,7 +94,6 @@ if __name__ == "__main__":
         audio, _ = sf.read(path, dtype="int16")
         stream += audio.tobytes() + silence
 
-    reset()
     seg = Segmenter()
     count = 0
     for i in range(0, len(stream) - FRAME_BYTES + 1, FRAME_BYTES):

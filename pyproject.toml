@@ -1,0 +1,17 @@
+[project]
+name = "voice-translator"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-dotenv",
+    "groq",
+    "sarvamai",
+    "numpy",
+    "soundfile",
+    "onnxruntime",
+]
+
+[tool.vercel]
+entrypoint = "backend.main:app"
