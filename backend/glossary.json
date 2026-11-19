@@ -1,0 +1,18 @@
+{
+  "keep_english": [
+    "Google Meet",
+    "Asterisk",
+    "Zoom",
+    "Slack",
+    "WhatsApp",
+    "Jira",
+    "Gnani"
+  ],
+  "expand": {
+    "ETA": "estimated time of arrival",
+    "ASAP": "as soon as possible",
+    "EOD": "end of day",
+    "FYI": "for your information",
+    "WFH": "work from home"
+  }
+}
