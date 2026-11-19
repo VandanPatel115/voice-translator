@@ -10,6 +10,8 @@ let ws, audioCtx, stream;
 let playCtx;
 let nextStart = 0;
 let streamRate = 22050;
+let currentAudioId = null;
+let mutedAudioId = null;
 const activeSources = [];
 
 function playPcmChunk(arrayBuffer) {
@@ -32,6 +34,15 @@ function playPcmChunk(arrayBuffer) {
   source.onended = () => activeSources.splice(activeSources.indexOf(source), 1);
 }
 
+function stopPlayback() {
+  activeSources.forEach((source) => {
+    try { source.stop(); } catch (e) { /* already stopped */ }
+  });
+  activeSources.length = 0;
+  nextStart = 0;
+  mutedAudioId = currentAudioId;
+}
+
 function floatTo16BitPCM(floats) {
   const out = new Int16Array(floats.length);
   for (let i = 0; i < floats.length; i++) {
@@ -48,18 +59,24 @@ async function start() {
     ws.binaryType = "arraybuffer";
     ws.onmessage = (event) => {
     if (event.data instanceof ArrayBuffer) {
+      if (currentAudioId === mutedAudioId) return;
       playPcmChunk(event.data);
       return;
     }
     const msg = JSON.parse(event.data);
     if (msg.type === "vad") {
       statusEl.textContent = msg.speaking ? "🎙️ speaking…" : "listening";
+      if (msg.speaking && activeSources.length > 0) {
+        stopPlayback();
+        log("✋ interrupted: playback stopped");
+      }
     } else if (msg.type === "final_en") {
       log(`[${msg.id}] EN: ${msg.text}`);
     } else if (msg.type === "hindi") {
       log(`[${msg.id}] HI: ${msg.text}   (ASR ${msg.asr_ms} ms, MT ${msg.mt_ms} ms)`);
     } else if (msg.type === "audio_start") {
       streamRate = msg.sample_rate;
+      currentAudioId = msg.id;
     } else if (msg.type === "audio_end") {
       log(`[${msg.id}] 🔊 TTS first audio ${msg.tts_first_ms} ms, total ${msg.tts_total_ms} ms`);
     } else if (msg.type === "error") {
